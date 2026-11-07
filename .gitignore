@@ -1,0 +1,12 @@
+# binários
+/qrdrop
+/qrdrop.exe
+/dist/
+
+# arquivos recebidos em testes locais
+/recebidos/
+
+# editores e SO
+.vscode/
+.idea/
+.DS_Store
