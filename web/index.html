@@ -4,9 +4,137 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>qrdrop</title>
+  <style>
+    :root { --bg:#fafafa; --card:#fff; --ink:#1d1d1f; --muted:#6e6e73; --line:#e3e3e8; --accent:#2563eb; --ok:#15803d; --err:#b91c1c; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#111214; --card:#1c1d21; --ink:#f2f2f4; --muted:#a1a1aa; --line:#2e2f35; --accent:#60a5fa; --ok:#4ade80; --err:#f87171; }
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; font:16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
+    main { max-width:560px; margin:0 auto; padding:24px 16px 48px; }
+    h1 { font-size:24px; margin:0 0 4px; }
+    p.sub { margin:0 0 20px; color:var(--muted); }
+    #drop { display:block; border:2px dashed var(--line); border-radius:12px; padding:32px 16px; text-align:center; background:var(--card); cursor:pointer; }
+    #drop.over { border-color:var(--accent); }
+    #drop strong { color:var(--accent); }
+    input[type=file] { display:none; }
+    ul { list-style:none; padding:0; margin:20px 0 0; }
+    li { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:10px; }
+    .row { display:flex; justify-content:space-between; gap:8px; font-size:14px; }
+    .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+    .pct { color:var(--muted); white-space:nowrap; }
+    .bar { height:6px; background:var(--line); border-radius:3px; margin-top:8px; overflow:hidden; }
+    .bar > div { height:100%; width:0; background:var(--accent); transition:width .15s; }
+    li.ok .bar > div { background:var(--ok); }
+    li.err .bar > div { background:var(--err); }
+    .info { font-size:12px; color:var(--muted); margin-top:6px; word-break:break-all; }
+    li.err .info { color:var(--err); }
+  </style>
 </head>
 <body>
+<main>
   <h1>qrdrop</h1>
-  <p>Página de upload: implementação na issue "Página mobile de envio de múltiplos arquivos".</p>
+  <p class="sub">Os arquivos vão direto para o computador, pela sua rede.</p>
+
+  <label id="drop">
+    <strong>Escolher arquivos</strong> ou arraste aqui
+    <input id="pick" type="file" multiple>
+  </label>
+
+  <ul id="list"></ul>
+</main>
+
+<script>
+  const PARALLEL = 4; // quantos uploads ao mesmo tempo
+  const token = new URLSearchParams(location.search).get("t") || "";
+  const q = "?t=" + encodeURIComponent(token);
+  const items = new Map(); // id do upload -> elemento da lista
+
+  // Progresso vindo do servidor (bytes realmente gravados no disco), via SSE.
+  // Do lado do Go, quem alimenta este stream é o hub de progresso (channels).
+  const events = new EventSource("/events" + q);
+  events.onmessage = (e) => {
+    const ev = JSON.parse(e.data);
+    const li = items.get(ev.id);
+    if (li && !ev.done && !li.classList.contains("ok") && !li.classList.contains("err")) setProgress(li, ev.bytes, ev.total);
+  };
+
+  const pick = document.getElementById("pick");
+  const drop = document.getElementById("drop");
+  pick.onchange = () => { enqueue(pick.files); pick.value = ""; };
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+  drop.ondragleave = () => drop.classList.remove("over");
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); enqueue(e.dataTransfer.files); };
+
+  const queue = [];
+  let running = 0;
+
+  function enqueue(files) {
+    for (const file of files) {
+      const id = Math.random().toString(16).slice(2) + Date.now().toString(16);
+      const li = document.createElement("li");
+      li.innerHTML = '<div class="row"><span class="name"></span><span class="pct">na fila</span></div>' +
+                     '<div class="bar"><div></div></div><div class="info"></div>';
+      li.querySelector(".name").textContent = file.name;
+      document.getElementById("list").prepend(li);
+      items.set(id, li);
+      queue.push({ id, file, li });
+    }
+    next();
+  }
+
+  // Cada arquivo vai numa requisição separada; até PARALLEL ao mesmo tempo.
+  function next() {
+    while (running < PARALLEL && queue.length > 0) {
+      running++;
+      upload(queue.shift()).finally(() => { running--; next(); });
+    }
+  }
+
+  function upload({ id, file, li }) {
+    return new Promise((resolve) => {
+      const form = new FormData();
+      form.append("file", file, file.name);
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/upload" + q);
+      xhr.setRequestHeader("X-Upload-ID", id);
+      xhr.setRequestHeader("X-File-Size", String(file.size));
+      setProgress(li, 0, file.size);
+      xhr.onload = () => {
+        if (xhr.status === 200) {
+          const res = JSON.parse(xhr.responseText);
+          li.classList.add("ok");
+          setProgress(li, file.size, file.size);
+          li.querySelector(".pct").textContent = "recebido";
+          li.querySelector(".info").textContent = "salvo como " + res.name + " · SHA-256 " + res.sha256.slice(0, 16) + "…";
+        } else {
+          fail(li, xhr.responseText || xhr.statusText);
+        }
+        resolve();
+      };
+      xhr.onerror = () => { fail(li, "falha de rede"); resolve(); };
+      xhr.send(form);
+    });
+  }
+
+  function setProgress(li, bytes, total) {
+    const pct = total > 0 ? Math.min(100, Math.floor(bytes * 100 / total)) : 0;
+    li.querySelector(".bar > div").style.width = pct + "%";
+    li.querySelector(".pct").textContent = pct + "% de " + human(total);
+  }
+
+  function fail(li, msg) {
+    li.classList.add("err");
+    li.querySelector(".pct").textContent = "erro";
+    li.querySelector(".info").textContent = msg;
+  }
+
+  function human(n) {
+    const u = ["B", "KB", "MB", "GB"];
+    let i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? n : n.toFixed(1)) + " " + u[i];
+  }
+</script>
 </body>
 </html>

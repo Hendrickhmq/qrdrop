@@ -5,8 +5,10 @@
 ```
 cmd/qrdrop/        main: flags, inicialização, QR no terminal
 internal/server/   handlers HTTP, upload, token, progresso (SSE)
-internal/netutil/  descoberta do IP local                  (a criar)
-internal/storage/  nomes seguros, gravação em disco        (a criar)
+internal/progress/ hub de progresso (channel + goroutine única)
+internal/client/   `qrdrop send`: envio PC → PC com pool de goroutines
+internal/netutil/  descoberta do IP local
+internal/storage/  nomes seguros, gravação em disco
 web/               index.html, JS e CSS da página mobile (embutidos no binário)
 docs/              documentação e análise da linguagem
 ```
@@ -23,12 +25,16 @@ docs/              documentação e análise da linguagem
 6. O handler de upload lê o corpo em streaming (`multipart.Reader` + `io.Copy`), sem carregar o arquivo inteiro na memória, e publica o progresso num channel.
 7. Um **hub de progresso** (uma goroutine) recebe os eventos do channel e repassa para os clientes conectados em `/events` via SSE.
 
+## Envio pelo terminal (`qrdrop send`)
+
+Para mandar de um PC para outro sem navegador. Um pool de N goroutines (`-p`, padrão 4) consome um channel de tarefas; cada uma calcula o SHA-256 local, envia o arquivo em streaming (`io.Pipe` + `multipart.Writer`) e compara o hash devolvido pelo receptor. O progresso de todas vai por um channel para uma goroutine que desenha a linha no terminal.
+
 ## Endpoints
 
 | Método | Rota | Descrição |
 |---|---|---|
 | GET | `/?t=TOKEN` | Página de upload (servida de `embed.FS`) |
-| POST | `/upload?t=TOKEN` | Recebe um arquivo (multipart) |
+| POST | `/upload?t=TOKEN` | Recebe um arquivo (multipart). Cabeçalhos opcionais: `X-Upload-ID`, `X-File-Size`, `X-SHA256` (se não bater, responde 422 e apaga o arquivo) |
 | GET | `/events?t=TOKEN` | Stream SSE de progresso |
 | GET | `/healthz` | Verificação simples |
 

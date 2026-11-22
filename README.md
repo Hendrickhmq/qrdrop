@@ -21,12 +21,18 @@ Linguagem do projeto: **Go**.
 
 O celular não instala nada: usa o navegador. O PC roda um único binário, que já traz a página web dentro dele.
 
-## Uso (planejado)
+## Uso
 
 ```bash
-qrdrop                       # salva em ./recebidos, porta 8080
+qrdrop                       # recebe: salva em ./recebidos, porta 8080, mostra o QR
 qrdrop -dir ~/Fotos -port 9000
+
+# de outro PC, pelo terminal: envia vários arquivos em paralelo
+qrdrop send "http://192.168.0.12:8080/?t=TOKEN" video.mp4 fotos/*.jpg
+qrdrop send -p 8 URL arquivos...   # 8 envios ao mesmo tempo (padrão: 4)
 ```
+
+Celular ou outro computador também podem abrir a URL do QR no navegador e arrastar os arquivos. Em todos os casos cada arquivo vai numa requisição separada, em paralelo, e o servidor calcula o SHA-256 enquanto grava; o `qrdrop send` confere esse hash com o do arquivo original.
 
 ## Desenvolvimento
 
