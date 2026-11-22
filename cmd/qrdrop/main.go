@@ -45,6 +45,9 @@ func main() {
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "qrdrop:", err)
+	}
+	waitIfOwnConsole() // Windows, dois cliques no .exe: deixa ler antes de a janela fechar
+	if err != nil {
 		os.Exit(1)
 	}
 }
