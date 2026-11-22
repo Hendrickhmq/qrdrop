@@ -7,7 +7,10 @@
 // "não comunique compartilhando memória; compartilhe memória comunicando".
 package progress
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Event descreve o andamento de um arquivo.
 type Event struct {
@@ -45,6 +48,10 @@ func (h *Hub) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			// Quando mais de um case está pronto, o select sorteia um. Então o
+			// hub pode parar com eventos ainda na fila (o "terminou" do último
+			// upload antes do Ctrl+C, por exemplo): entregamos esses antes.
+			h.drain(subs)
 			for c := range subs {
 				close(c)
 			}
@@ -57,20 +64,55 @@ func (h *Hub) Run(ctx context.Context) {
 				close(c)
 			}
 		case ev := <-h.events:
-			for c := range subs {
-				select {
-				case c <- ev:
-				default:
-					// Inscrito lento: descartamos este evento para ele em vez de
-					// travar todos os uploads. O próximo evento traz o valor atualizado.
-				}
-			}
+			broadcast(subs, ev)
 		}
 	}
 }
 
+// drain entrega os eventos que já estavam na fila e volta quando ela esvazia.
+func (h *Hub) drain(subs map[chan Event]struct{}) {
+	for {
+		select {
+		case ev := <-h.events:
+			broadcast(subs, ev)
+		default: // fila vazia
+			return
+		}
+	}
+}
+
+func broadcast(subs map[chan Event]struct{}, ev Event) {
+	for c := range subs {
+		deliver(c, ev)
+	}
+}
+
+// doneTimeout é quanto o hub espera um inscrito lento aceitar um evento final.
+const doneTimeout = 50 * time.Millisecond
+
+// deliver entrega ev a um inscrito sem deixar um inscrito lento travar todos.
+// Evento de progresso com a fila cheia é descartado: o próximo traz o número
+// atualizado. Já o evento final (Done) não pode se perder, então esperamos
+// um pouco o inscrito abrir espaço; só um inscrito travado de vez o perde.
+func deliver(c chan Event, ev Event) {
+	select {
+	case c <- ev:
+		return
+	default:
+	}
+	if !ev.Done {
+		return
+	}
+	t := time.NewTimer(doneTimeout)
+	defer t.Stop()
+	select {
+	case c <- ev:
+	case <-t.C:
+	}
+}
+
 // Publish envia um evento ao hub. Eventos intermediários são descartados se o
-// hub estiver sobrecarregado; o evento final (Done) sempre é entregue.
+// hub estiver sobrecarregado; o evento final (Done) sempre chega ao hub.
 func (h *Hub) Publish(ev Event) {
 	if ev.Done {
 		select {
