@@ -1,8 +1,10 @@
 package progress
 
 import (
+	"bytes"
 	"context"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -146,6 +148,50 @@ func TestPararOHubEntregaOQueJaEstavaNaFila(t *testing.T) {
 		}
 		if n != 50 {
 			t.Fatalf("rodada %d: o inscrito recebeu %d de 50 eventos", rodada, n)
+		}
+	}
+}
+
+func TestReporter(t *testing.T) {
+	var out bytes.Buffer
+	// Relógio falso: Run chama Now uma vez por evento, e cada chamada devolve
+	// o próximo horário da lista. Só a goroutine do Reporter mexe em i.
+	t0 := time.Date(2026, 11, 25, 14, 0, 0, 0, time.UTC)
+	times := []time.Time{t0, t0.Add(2 * time.Second), t0.Add(2 * time.Second)}
+	i := 0
+	r := &Reporter{Out: &out, Now: func() time.Time { i++; return times[i-1] }}
+
+	events := make(chan Event)
+	done := make(chan struct{})
+	go func() { r.Run(events); close(done) }()
+
+	events <- Event{ID: "v", Name: "video.mp4", Bytes: 1 << 20, Total: 20 << 20}
+	events <- Event{ID: "v", Name: "video.mp4", Bytes: 20 << 20, Total: 20 << 20, Done: true, SHA256: "9a982e9cd0591d5d34"}
+	events <- Event{ID: "f", Name: "foto.jpg", Done: true, Err: "SHA-256 não confere"}
+	close(events)
+	<-done
+
+	want := []string{
+		"14:00:00 recebendo video.mp4 (20.0 MB)",
+		"14:00:02 OK        video.mp4  20.0 MB em 2s (10.0 MB/s)  sha256 9a982e9cd059",
+		"14:00:02 ERRO      foto.jpg: SHA-256 não confere",
+	}
+	got := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(got) != len(want) {
+		t.Fatalf("saída inesperada:\n%s", out.String())
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("linha %d:\n got  %q\n want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestHumanBytes(t *testing.T) {
+	cases := map[int64]string{0: "0 B", 1023: "1023 B", 1536: "1.5 KB", 30 << 20: "30.0 MB", 3 << 30: "3.0 GB"}
+	for in, want := range cases {
+		if got := HumanBytes(in); got != want {
+			t.Errorf("HumanBytes(%d) = %q, queria %q", in, got, want)
 		}
 	}
 }
