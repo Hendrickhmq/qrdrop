@@ -114,6 +114,30 @@ func TestNewToken(t *testing.T) {
 	}
 }
 
+// Com a porta padrão ocupada, o qrdrop usa outra; com -port, devolve o erro.
+func TestListenComAPortaOcupada(t *testing.T) {
+	busy, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	port := busy.Addr().(*net.TCPAddr).Port
+
+	ln, err := listen(port, false)
+	if err != nil {
+		t.Fatalf("sem -port deveria achar outra porta: %v", err)
+	}
+	if got := ln.Addr().(*net.TCPAddr).Port; got == port {
+		t.Errorf("usou a porta ocupada %d", got)
+	}
+	ln.Close()
+
+	if ln, err := listen(port, true); err == nil {
+		ln.Close()
+		t.Error("com -port explícito deveria devolver o erro")
+	}
+}
+
 // Ctrl+C com um envio que não termina no prazo: shutdown derruba a conexão,
 // e o arquivo pela metade é apagado antes de shutdown voltar. Antes, o
 // qrdrop saía depois de 5 s e deixava o pedaço na pasta de recebidos.

@@ -98,11 +98,16 @@ func runReceive(args []string) error {
 	if err != nil {
 		return err
 	}
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
+	portSet := false // o usuário escreveu -port? fs.Visit só passa pelas flags usadas
+	fs.Visit(func(f *flag.Flag) { portSet = portSet || f.Name == "port" })
+	ln, err := listen(*port, portSet)
 	if err != nil {
 		return fmt.Errorf("abrindo a porta %d (já tem outro programa nela?): %w", *port, err)
 	}
 	actualPort := ln.Addr().(*net.TCPAddr).Port // com -port 0, o sistema escolheu
+	if *port != 0 && actualPort != *port {
+		fmt.Printf("A porta %d já estava em uso; usando a %d.\n\n", *port, actualPort)
+	}
 
 	// Ctrl+C cancela o contexto. Com -ttl, o prazo também cancela.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -173,6 +178,17 @@ func runReceive(args []string) error {
 	}
 	fmt.Println(". Tchau!")
 	return nil
+}
+
+// listen abre a porta. Se é a porta padrão (sem -port) e outro programa já
+// está nela, usa uma porta livre qualquer: o QR code leva a porta certa de
+// qualquer jeito. Quem escolheu a porta com -port recebe o erro.
+func listen(port int, explicit bool) (net.Listener, error) {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil && !explicit {
+		return net.Listen("tcp", ":0")
+	}
+	return ln, err
 }
 
 // shutdown desliga o servidor: espera até grace os envios em andamento e,
