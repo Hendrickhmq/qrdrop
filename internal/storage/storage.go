@@ -5,29 +5,88 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
+
+// MaxNameBytes limita o tamanho do nome salvo. A maioria dos sistemas de
+// arquivos aceita no máximo 255 bytes por nome; deixamos folga para o
+// sufixo " (1)" que Create acrescenta quando o nome já existe.
+const MaxNameBytes = 200
+
+// windowsReserved são nomes de dispositivos do Windows. Mesmo com extensão
+// ("con.txt") eles não viram arquivos comuns, então nunca os usamos. A lista
+// segue a documentação da Microsoft ("Naming Files, Paths, and Namespaces"),
+// que inclui COM0, LPT0 e os dígitos sobrescritos ¹ ² ³.
+var windowsReserved = map[string]bool{
+	"CON": true, "PRN": true, "AUX": true, "NUL": true, "CONIN$": true, "CONOUT$": true,
+	"COM0": true, "COM1": true, "COM2": true, "COM3": true, "COM4": true,
+	"COM5": true, "COM6": true, "COM7": true, "COM8": true, "COM9": true,
+	"COM¹": true, "COM²": true, "COM³": true,
+	"LPT0": true, "LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true,
+	"LPT5": true, "LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
+	"LPT¹": true, "LPT²": true, "LPT³": true,
+}
 
 // SafeName limpa o nome de arquivo enviado pelo cliente.
 //
 // O nome vem da rede, então não dá para confiar nele: "../../etc/passwd"
 // escaparia da pasta de destino (path traversal). Ficamos só com a última
-// parte do caminho e removemos caracteres problemáticos.
+// parte do caminho, trocamos caracteres proibidos por "_" e evitamos nomes
+// que o Windows trata de forma especial. O resultado nunca é vazio, e
+// SafeName(SafeName(x)) == SafeName(x).
 func SafeName(name string) string {
 	name = strings.ReplaceAll(name, "\\", "/") // caminhos do Windows
-	name = filepath.Base(name)
+	name = path.Base(name)
+	if name == "/" || name == "." || name == ".." {
+		name = ""
+	}
 	name = strings.Map(func(r rune) rune {
-		if r < 32 || strings.ContainsRune(`<>:"/\|?*`, r) {
+		if r < 32 || r == 0x7f || strings.ContainsRune(`<>:"/\|?*`, r) {
 			return '_'
 		}
 		return r
-	}, name)
-	name = strings.TrimLeft(strings.TrimSpace(name), ".")
+	}, name) // de quebra, bytes que não são UTF-8 válido viram U+FFFD
+	name = trimDotsAndSpaces(name)
 	if name == "" {
 		return "arquivo"
 	}
+	name = trimDotsAndSpaces(truncate(name, MaxNameBytes))
+	if isWindowsReserved(name) {
+		name = "_" + name
+	}
 	return name
+}
+
+// trimDotsAndSpaces tira pontos e espaços das pontas: no começo, um ponto
+// esconderia o arquivo (".bashrc"); no fim, o Windows os apaga sozinho.
+func trimDotsAndSpaces(s string) string {
+	return strings.TrimFunc(s, func(r rune) bool { return r == '.' || unicode.IsSpace(r) })
+}
+
+// truncate corta o nome em no máximo limit bytes, mantendo a extensão e sem
+// partir um caractere UTF-8 no meio.
+func truncate(name string, limit int) string {
+	if len(name) <= limit {
+		return name
+	}
+	ext := path.Ext(name)
+	if len(ext) > 20 { // "extensão" estranha: tratamos como parte do nome
+		ext = ""
+	}
+	cut := limit - len(ext)
+	for cut > 0 && !utf8.RuneStart(name[cut]) {
+		cut--
+	}
+	return name[:cut] + ext
+}
+
+func isWindowsReserved(name string) bool {
+	stem, _, _ := strings.Cut(name, ".")
+	return windowsReserved[strings.ToUpper(strings.TrimSpace(stem))]
 }
 
 // Create cria um arquivo novo em dir sem sobrescrever nenhum existente.

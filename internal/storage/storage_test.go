@@ -1,10 +1,14 @@
 package storage
 
 import (
+	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestSafeName(t *testing.T) {
@@ -16,12 +20,88 @@ func TestSafeName(t *testing.T) {
 		{".bashrc", "bashrc"},
 		{"", "arquivo"},
 		{"..", "arquivo"},
+		{"/", "arquivo"},
 		{"a:b?.txt", "a_b_.txt"},
+		{"  férias 2026.mp4  ", "férias 2026.mp4"},
+		{"relatório.pdf...", "relatório.pdf"},
+		{"con.txt", "_con.txt"},
+		{"NUL", "_NUL"},
+		{"com1.log", "_com1.log"},
+		{"COM0", "_COM0"},
+		{"lpt¹.txt", "_lpt¹.txt"},      // dígito sobrescrito também é reservado
+		{"com10.txt", "com10.txt"},     // só de 0 a 9
+		{"console.txt", "console.txt"}, // só o nome exato é reservado
+		{"linha\nnova.txt", "linha_nova.txt"},
+		{"\xff\xfeimg.png", "\uFFFD\uFFFDimg.png"},
 	}
 	for _, c := range cases {
 		if got := SafeName(c.in); got != c.want {
 			t.Errorf("SafeName(%q) = %q, queria %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestSafeNameCortaNomesLongos(t *testing.T) {
+	longo := strings.Repeat("á", 300) + ".jpeg" // 600 bytes de "á"
+	got := SafeName(longo)
+	if len(got) > MaxNameBytes {
+		t.Fatalf("nome com %d bytes, limite %d", len(got), MaxNameBytes)
+	}
+	if !strings.HasSuffix(got, ".jpeg") || !utf8.ValidString(got) {
+		t.Errorf("perdeu a extensão ou cortou um caractere ao meio: %q", got)
+	}
+}
+
+// FuzzSafeName usa o fuzzing nativo do Go: o `go test` roda só as sementes;
+// `go test -fuzz=FuzzSafeName ./internal/storage` gera milhões de nomes
+// aleatórios procurando um que quebre alguma das propriedades abaixo.
+func FuzzSafeName(f *testing.F) {
+	for _, seed := range []string{"foto.jpg", "../../x", `a\b\..\c`, "con", " . ", "\x00", strings.Repeat("é", 200)} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, in string) {
+		got := SafeName(in)
+		switch {
+		case got == "":
+			t.Fatal("nome vazio")
+		case !utf8.ValidString(got):
+			t.Fatalf("UTF-8 inválido: %q", got)
+		case len(got) > MaxNameBytes+1: // +1 do "_" dos nomes reservados
+			t.Fatalf("nome longo demais (%d bytes)", len(got))
+		case strings.ContainsAny(got, `/\<>:"|?*`):
+			t.Fatalf("caractere proibido em %q", got)
+		case strings.HasPrefix(got, ".") || strings.HasSuffix(got, ".") || strings.HasSuffix(got, " "):
+			t.Fatalf("ponto ou espaço na ponta: %q", got)
+		case path.Base(got) != got || filepath.Base(got) != got:
+			t.Fatalf("ainda parece um caminho: %q", got)
+		case isWindowsReserved(got):
+			t.Fatalf("nome reservado do Windows: %q", got)
+		case SafeName(got) != got:
+			t.Fatalf("não é idempotente: %q -> %q", got, SafeName(got))
+		}
+		for _, r := range got {
+			if r < 32 || r == 0x7f {
+				t.Fatalf("caractere de controle em %q", got)
+			}
+		}
+	})
+}
+
+// Exemplos também são testes: o `go test` confere a saída com o comentário
+// "Output", e eles aparecem na documentação gerada pelo `go doc`.
+func ExampleSafeName() {
+	fmt.Println(SafeName("../../etc/passwd"))
+	fmt.Println(SafeName(`C:\Users\ana\foto.jpg`))
+	fmt.Println(SafeName("con.txt"))
+	// Output:
+	// passwd
+	// foto.jpg
+	// _con.txt
+}
+
+func BenchmarkSafeName(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		SafeName(`C:\Users\ana\Imagens\férias na praia 2026 (final).jpeg`)
 	}
 }
 
@@ -58,5 +138,12 @@ func TestCreateNaoSobrescreve(t *testing.T) {
 	}
 	if !seen["foto.jpg"] || !seen["foto (1).jpg"] {
 		t.Errorf("nomes inesperados: %v", names)
+	}
+}
+
+func TestCreatePastaInexistente(t *testing.T) {
+	_, err := Create(filepath.Join(t.TempDir(), "nao-existe"), "a.txt")
+	if err == nil {
+		t.Fatal("esperava erro ao criar em pasta inexistente")
 	}
 }
