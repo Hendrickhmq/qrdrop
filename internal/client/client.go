@@ -129,7 +129,9 @@ func (s *Sender) sendFile(ctx context.Context, path string) (res Result) {
 	// e manda pela rede (o http.Client). Nada é carregado inteiro na memória.
 	pr, pw := io.Pipe()
 	mw := multipart.NewWriter(pw)
+	writerDone := make(chan struct{})
 	go func() {
+		defer close(writerDone)
 		part, err := mw.CreateFormFile("file", filepath.Base(path))
 		if err == nil {
 			_, err = io.Copy(part, &countingReader{r: f, file: path, total: info.Size(), out: s.Progress})
@@ -139,10 +141,19 @@ func (s *Sender) sendFile(ctx context.Context, path string) (res Result) {
 		}
 		pw.CloseWithError(err) // err nil = fim normal do corpo
 	}()
+	// Antes de sair, esperamos a goroutine que escreve o corpo terminar.
+	// Se o receptor respondeu cedo (token errado, por exemplo), ninguém mais
+	// lê o pipe: fechar o lado de leitura destrava a escrita pendente. Sem
+	// isso, a goroutine poderia continuar lendo o arquivo e mandando progresso
+	// depois que quem chamou SendAll já fechou o channel de progresso.
+	// Este defer roda antes do f.Close() lá de cima (defers rodam em ordem inversa).
+	defer func() {
+		pr.Close()
+		<-writerDone
+	}()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.uploadURL(), pr)
 	if err != nil {
-		pr.Close()
 		res.Err = err
 		return res
 	}
@@ -157,13 +168,13 @@ func (s *Sender) sendFile(ctx context.Context, path string) (res Result) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		pr.Close()
 		res.Err = err
 		return res
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		// Só queremos a mensagem para mostrar; se a leitura falhar, fica vazia.
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		res.Err = fmt.Errorf("receptor respondeu %s: %s", resp.Status, strings.TrimSpace(string(msg)))
 		return res

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"qrdrop/internal/progress"
@@ -58,6 +59,37 @@ func TestSendAllEmParalelo(t *testing.T) {
 	}
 	if results[10].Err == nil {
 		t.Error("arquivo inexistente deveria dar erro")
+	}
+}
+
+// Com o token errado o receptor responde 401 sem ler o corpo. SendAll tem que
+// devolver o erro e só retornar depois que nenhuma goroutine vai mais mandar
+// progresso: fechar o channel logo em seguida não pode causar panic.
+func TestSendAllTokenErrado(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := progress.NewHub()
+	go hub.Run(ctx)
+	ts := httptest.NewServer((&server.Server{Dir: t.TempDir(), Token: "certo", Hub: hub}).Handler())
+	defer ts.Close()
+
+	p := filepath.Join(t.TempDir(), "grande.bin")
+	os.WriteFile(p, make([]byte, 8<<20), 0o644) // 8 MB
+
+	base, _ := ParseURL(ts.URL + "/?t=errado")
+	prog := make(chan Progress)
+	go func() {
+		for range prog {
+		}
+	}()
+	s := &Sender{BaseURL: base, Parallel: 2, Progress: prog}
+	results := s.SendAll(ctx, []string{p, p})
+	close(prog) // se alguma goroutine ainda mandasse progresso, daria panic aqui
+
+	for _, r := range results {
+		if r.Err == nil || !strings.Contains(r.Err.Error(), "401") {
+			t.Errorf("esperava erro 401, veio %v", r.Err)
+		}
 	}
 }
 

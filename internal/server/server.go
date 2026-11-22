@@ -107,6 +107,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	// Se a escrita falhar, o cliente já desconectou: não há a quem avisar.
 	json.NewEncoder(w).Encode(res)
 }
 
@@ -129,7 +130,7 @@ func (s *Server) save(id, name string, total int64, src io.Reader, wantHash stri
 		}
 		ev := progress.Event{ID: id, Name: res.Name, Bytes: res.Size, Total: total, Done: true}
 		if err != nil {
-			os.Remove(path)
+			os.Remove(path) // melhor esforço: não deixar arquivo pela metade
 			ev.Err = err.Error()
 		} else {
 			ev.SHA256 = res.SHA256

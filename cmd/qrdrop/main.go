@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mdp/qrterminal/v3"
 
@@ -84,16 +85,24 @@ func runReceive(args []string) error {
 	fmt.Printf("\nDe outro PC: qrdrop send %q arquivo...\n", url)
 	fmt.Printf("Salvando em %s. Ctrl+C para sair.\n\n", *dir)
 
+	// Desligamento gracioso: no Ctrl+C o servidor para de aceitar conexões
+	// e espera até 5 s os envios em andamento terminarem.
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		httpSrv.Shutdown(shutdownCtx)
+		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+			fmt.Fprintln(os.Stderr, "qrdrop: envios interrompidos ao sair:", err)
+		}
 	}()
 
+	// Serve retorna assim que Shutdown é chamado; esperamos o Shutdown acabar.
 	if err := httpSrv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	<-shutdownDone
 	fmt.Println("\ntchau!")
 	return nil
 }
@@ -162,6 +171,7 @@ func printProgress(in <-chan client.Progress, done chan<- struct{}) {
 	state := map[string]client.Progress{}
 	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
+	width := 0 // tamanho da última linha desenhada
 
 	draw := func() {
 		names := make([]string, 0, len(state))
@@ -178,7 +188,12 @@ func printProgress(in <-chan client.Progress, done chan<- struct{}) {
 			}
 			parts = append(parts, fmt.Sprintf("%s %3d%%", short(name), pct))
 		}
-		fmt.Printf("\r\033[K%s", strings.Join(parts, " | "))
+		line := strings.Join(parts, " | ")
+		// "\r" volta ao início da linha; completar com espaços apaga o que
+		// sobrou da linha anterior (funciona até no prompt antigo do Windows).
+		n := utf8.RuneCountInString(line)
+		fmt.Printf("\r%s%s", line, strings.Repeat(" ", max(0, width-n)))
+		width = n
 	}
 
 	for {
