@@ -3,8 +3,11 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -174,5 +177,62 @@ func TestParseURLExigeToken(t *testing.T) {
 	}
 	if _, err := ParseURL("192.168.0.10:8080/?t=abc"); err != nil {
 		t.Error(err)
+	}
+}
+
+// O send manda o próprio hash no cabeçalho e confere o que o receptor
+// devolve. Aqui o receptor é de mentira e responde um hash errado: o send
+// tem que acusar, mesmo com status 200.
+func TestSendAllConfereOHash(t *testing.T) {
+	data := []byte("conteúdo importante")
+	p := filepath.Join(t.TempDir(), "doc.txt")
+	os.WriteFile(p, data, 0o644)
+	sum := sha256.Sum256(data)
+	want := hex.EncodeToString(sum[:])
+
+	headers := make(chan string, 1) // channel: o handler roda em outra goroutine
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		headers <- r.Header.Get("X-SHA256")
+		io.Copy(io.Discard, r.Body)
+		fmt.Fprintf(w, `{"name":"doc.txt","sha256":%q}`, strings.Repeat("0", 64))
+	}))
+	defer ts.Close()
+
+	base, _ := ParseURL(ts.URL + "/?t=tk")
+	res := (&Sender{BaseURL: base, Parallel: 1}).SendAll(context.Background(), []string{p})
+	if got := <-headers; got != want {
+		t.Errorf("X-SHA256 enviado = %q, queria %q", got, want)
+	}
+	if res[0].Err == nil || !strings.Contains(res[0].Err.Error(), "não confere") {
+		t.Errorf("esperava erro de SHA-256, veio %v", res[0].Err)
+	}
+}
+
+// Parallel 0 (ou negativo) vale como 1 trabalhador: envia em vez de travar.
+func TestSendAllComParallelZero(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := progress.NewHub()
+	go hub.Run(ctx)
+	ts := httptest.NewServer(server.New(server.Config{Dir: t.TempDir(), Token: "tk", Hub: hub}).Handler())
+	defer ts.Close()
+
+	dir := t.TempDir()
+	files := []string{filepath.Join(dir, "a.txt"), filepath.Join(dir, "b.txt")}
+	for _, f := range files {
+		os.WriteFile(f, []byte(f), 0o644)
+	}
+	base, _ := ParseURL(ts.URL + "/?t=tk")
+	done := make(chan []Result)
+	go func() { done <- (&Sender{BaseURL: base, Parallel: 0}).SendAll(ctx, files) }()
+	select {
+	case res := <-done:
+		for _, r := range res {
+			if r.Err != nil {
+				t.Errorf("%s: %v", r.File, r.Err)
+			}
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("SendAll travou com Parallel 0")
 	}
 }

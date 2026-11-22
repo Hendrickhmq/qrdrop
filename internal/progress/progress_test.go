@@ -103,6 +103,26 @@ func TestInscritoLentoNaoTravaNinguem(t *testing.T) {
 	}
 }
 
+// Um inscrito com a fila cheia ainda recebe o evento final, se abrir espaço
+// em até doneTimeout (50 ms). Os eventos de progresso podem se perder; o
+// final, não: é ele que faz a página e o terminal mostrarem "recebido".
+func TestEventoFinalEsperaInscritoComFilaCheia(t *testing.T) {
+	h, _ := startHub(t)
+	c := h.Subscribe()
+	for i := 0; i < cap(c); i++ {
+		h.Publish(Event{ID: "x", Bytes: int64(i)}) // enche a fila do inscrito
+	}
+	h.Publish(Event{ID: "x", Done: true})
+	time.Sleep(doneTimeout / 3) // o hub já tentou entregar e está esperando espaço
+
+	for i := 0; i < cap(c); i++ {
+		recv(t, c) // o inscrito "acorda" e esvazia a fila
+	}
+	if ev := recv(t, c); !ev.Done {
+		t.Fatalf("esperava o evento final, veio %+v", ev)
+	}
+}
+
 func TestPararOHubFechaInscritosESoltaPublish(t *testing.T) {
 	h, cancel := startHub(t)
 	c := h.Subscribe()
@@ -157,7 +177,8 @@ func TestReporter(t *testing.T) {
 	// Relógio falso: Run chama Now uma vez por evento, e cada chamada devolve
 	// o próximo horário da lista. Só a goroutine do Reporter mexe em i.
 	t0 := time.Date(2026, 11, 25, 14, 0, 0, 0, time.UTC)
-	times := []time.Time{t0, t0.Add(2 * time.Second), t0.Add(2 * time.Second)}
+	t2 := t0.Add(2 * time.Second)
+	times := []time.Time{t0, t2, t2, t2, t2.Add(50 * time.Millisecond)}
 	i := 0
 	r := &Reporter{Out: &out, Now: func() time.Time { i++; return times[i-1] }}
 
@@ -168,6 +189,9 @@ func TestReporter(t *testing.T) {
 	events <- Event{ID: "v", Name: "video.mp4", Bytes: 1 << 20, Total: 20 << 20}
 	events <- Event{ID: "v", Name: "video.mp4", Bytes: 20 << 20, Total: 20 << 20, Done: true, SHA256: "9a982e9cd0591d5d34"}
 	events <- Event{ID: "f", Name: "foto.jpg", Done: true, Err: "SHA-256 não confere"}
+	// Chega em 50 ms: rápido demais para tempo e velocidade fazerem sentido.
+	events <- Event{ID: "r", Name: "nota.txt", Bytes: 0, Total: 10}
+	events <- Event{ID: "r", Name: "nota.txt", Bytes: 10, Total: 10, Done: true, SHA256: "0123456789abcdef"}
 	close(events)
 	<-done
 
@@ -175,6 +199,8 @@ func TestReporter(t *testing.T) {
 		"14:00:00 recebendo video.mp4 (20.0 MB)",
 		"14:00:02 OK        video.mp4  20.0 MB em 2s (10.0 MB/s)  sha256 9a982e9cd059",
 		"14:00:02 ERRO      foto.jpg: SHA-256 não confere",
+		"14:00:02 recebendo nota.txt (10 B)",
+		"14:00:02 OK        nota.txt  10 B  sha256 0123456789ab",
 	}
 	got := strings.Split(strings.TrimSpace(out.String()), "\n")
 	if len(got) != len(want) {
