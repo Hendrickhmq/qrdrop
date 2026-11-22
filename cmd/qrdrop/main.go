@@ -152,11 +152,7 @@ func runReceive(args []string) error {
 	go func() {
 		defer close(shutdownDone)
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-			fmt.Fprintln(os.Stderr, "qrdrop: envios interrompidos ao sair:", err)
-		}
+		shutdown(httpSrv, srv, 5*time.Second)
 	}()
 
 	// Serve retorna assim que Shutdown é chamado; esperamos o Shutdown acabar.
@@ -177,6 +173,20 @@ func runReceive(args []string) error {
 	}
 	fmt.Println(". Tchau!")
 	return nil
+}
+
+// shutdown desliga o servidor: espera até grace os envios em andamento e,
+// passado o prazo, derruba as conexões que sobraram. Cada upload derrubado
+// apaga o que já tinha gravado, e srv.Wait espera essa limpeza. Antes, o
+// programa saía no meio de um envio longo e deixava o arquivo pela metade.
+func shutdown(httpSrv *http.Server, srv *server.Server, grace time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), grace)
+	defer cancel()
+	if err := httpSrv.Shutdown(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "qrdrop: interrompendo os envios que não terminaram em %s\n", grace)
+		httpSrv.Close()
+	}
+	srv.Wait()
 }
 
 // pickIP usa o IP da flag -ip, se veio, ou detecta o da rede local.

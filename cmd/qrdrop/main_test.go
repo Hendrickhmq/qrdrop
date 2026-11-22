@@ -3,9 +3,13 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +21,7 @@ import (
 
 	"qrdrop/internal/client"
 	"qrdrop/internal/progress"
+	"qrdrop/internal/server"
 )
 
 func TestProgressLine(t *testing.T) {
@@ -106,6 +111,62 @@ func TestNewToken(t *testing.T) {
 	b, err2 := newToken()
 	if err1 != nil || err2 != nil || len(a) != 32 || a == b {
 		t.Errorf("tokens %q e %q (%v, %v): queria 32 caracteres hex, diferentes", a, b, err1, err2)
+	}
+}
+
+// Ctrl+C com um envio que não termina no prazo: shutdown derruba a conexão,
+// e o arquivo pela metade é apagado antes de shutdown voltar. Antes, o
+// qrdrop saía depois de 5 s e deixava o pedaço na pasta de recebidos.
+func TestShutdownApagaEnvioQueNaoTerminou(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := progress.NewHub()
+	go hub.Run(ctx)
+	srv := server.New(server.Config{Dir: dir, Token: "tk", Hub: hub})
+	httpSrv := &http.Server{Handler: srv.Handler()}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go httpSrv.Serve(ln)
+
+	// Um envio que para no meio: o corpo vem de um pipe que nunca termina.
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	mw := multipart.NewWriter(pw)
+	go func() {
+		part, _ := mw.CreateFormFile("file", "lento.bin")
+		part.Write(make([]byte, 64<<10))
+	}()
+	req, _ := http.NewRequest(http.MethodPost, "http://"+ln.Addr().String()+"/upload?t=tk", pr)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	go func() {
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for srv.Stats().Active == 0 { // espera a gravação começar
+		if time.Now().After(deadline) {
+			t.Fatal("o upload não começou")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	stopped := make(chan struct{})
+	go func() { shutdown(httpSrv, srv, 100*time.Millisecond); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown travou esperando um envio que nunca termina")
+	}
+
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Errorf("sobrou arquivo pela metade: %s", entries[0].Name())
+	}
+	if st := srv.Stats(); st.Failed != 1 || st.Active != 0 {
+		t.Errorf("estatísticas erradas: %+v", st)
 	}
 }
 
