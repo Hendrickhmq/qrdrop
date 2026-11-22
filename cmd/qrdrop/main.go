@@ -25,8 +25,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/mdp/qrterminal/v3"
-
 	"qrdrop/internal/client"
 	"qrdrop/internal/netutil"
 	"qrdrop/internal/progress"
@@ -219,7 +217,7 @@ func pickIP(flagValue string) (net.IP, error) {
 
 func printBanner(url string, ip net.IP, dir string, catalog []share.File, maxSize int64, expiresAt time.Time) {
 	fmt.Println("Escaneie com a câmera do celular (no mesmo Wi-Fi deste computador):")
-	qrterminal.GenerateHalfBlock(url, qrterminal.L, os.Stdout)
+	printQR(os.Stdout, url, enableANSI())
 	fmt.Println(url)
 	fmt.Println()
 
