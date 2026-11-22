@@ -41,6 +41,8 @@ Celular ou outro computador também podem abrir a URL do QR no navegador e arras
 
 **Dicas para a demo:** no Windows, permita o qrdrop no firewall na primeira vez (inclusive em redes públicas). Wi-Fi de faculdade costuma bloquear um aparelho de falar com outro: o mais seguro é ligar o roteador do celular e conectar o notebook nele.
 
+No iPhone, se o Safari disser que o pedido era para "uma URL http com apenas https ativado", desligue Ajustes > Apps > Safari > Aviso de Conexão Não Segura (ou abra o endereço no Chrome ou no Firefox). O qrdrop usa http, e esse ajuste faz o Safari recusar qualquer endereço http.
+
 ## Desenvolvimento
 
 Requisitos: Go 1.22+.
