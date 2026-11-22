@@ -23,11 +23,17 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
+	modTime := f.ModTime
+	if info, err := file.Stat(); err == nil {
+		// O arquivo pode ter mudado depois que o qrdrop abriu: com a data
+		// antiga, o navegador ouviria "não mudou" (304) e ficaria com a cópia velha.
+		modTime = info.ModTime()
+	}
 
 	w.Header().Set("Content-Disposition", contentDisposition(f.Name))
 	// ServeContent aceita qualquer io.ReadSeeker (*os.File é um) e cuida de
 	// Range, que permite retomar um download interrompido, e de Content-Type.
-	http.ServeContent(w, r, f.Name, f.ModTime, file)
+	http.ServeContent(w, r, f.Name, modTime, file)
 }
 
 // contentDisposition diz ao navegador para baixar o arquivo com o nome certo.

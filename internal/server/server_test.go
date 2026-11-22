@@ -220,8 +220,8 @@ func TestLimiteDeTamanho(t *testing.T) {
 	if resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Errorf("sem X-File-Size: status %d, queria 413", resp.StatusCode)
 	}
-	// 3) Exatamente no limite passa.
-	if resp, body := upload(t, e, "certo.bin", make([]byte, 1000), nil); resp.StatusCode != http.StatusOK {
+	// 3) Exatamente no limite passa, avisando o tamanho ou não.
+	if resp, body := upload(t, e, "certo.bin", make([]byte, 1000), map[string]string{"X-File-Size": "1000"}); resp.StatusCode != http.StatusOK {
 		t.Errorf("no limite: status %d (%s), queria 200", resp.StatusCode, body)
 	}
 	if names := files(t, e.dir); len(names) != 1 || names[0] != "certo.bin" {

@@ -41,7 +41,8 @@ type Server struct {
 	// contadores ao mesmo tempo; sync/atomic garante isso sem mutex.
 	received, failed, bytes, active atomic.Int64
 
-	anonymous atomic.Int64 // numera os uploads que chegam sem X-Upload-ID
+	anonymous atomic.Int64   // numera os uploads que chegam sem X-Upload-ID
+	saving    sync.WaitGroup // gravações em andamento, para Wait
 
 	testHookSaving func() // só nos testes: chamado com o slot ocupado
 }
@@ -66,6 +67,12 @@ func New(cfg Config) *Server {
 	return s
 }
 
+// Wait espera as gravações em andamento terminarem, inclusive a limpeza dos
+// arquivos pela metade de uploads interrompidos. Chame depois de
+// http.Server.Shutdown ou Close: sem isso, o programa poderia sair antes
+// dessa limpeza e deixar um pedaço de arquivo na pasta.
+func (s *Server) Wait() { s.saving.Wait() }
+
 // Handler monta as rotas. Server não precisa implementar http.Handler ele
 // mesmo: devolvemos um ServeMux, que já implementa (interface implícita).
 // Os padrões "MÉTODO /caminho/{nome}" existem no ServeMux desde o Go 1.22.
@@ -79,7 +86,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
-	return mux
+	return securityHeaders(mux)
+}
+
+// securityHeaders é um middleware que vale para todas as rotas.
+//   - nosniff: o navegador usa o Content-Type que mandamos, sem "adivinhar".
+//     Um .html compartilhado com -share é baixado, nunca executado.
+//   - no-referrer: o token está na URL; assim ele nunca vai no cabeçalho
+//     Referer para outro site.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // requireToken é um middleware: recebe um handler e devolve outro que só
