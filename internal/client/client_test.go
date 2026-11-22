@@ -3,12 +3,16 @@ package client
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"qrdrop/internal/progress"
 	"qrdrop/internal/server"
@@ -90,6 +94,77 @@ func TestSendAllTokenErrado(t *testing.T) {
 		if r.Err == nil || !strings.Contains(r.Err.Error(), "401") {
 			t.Errorf("esperava erro 401, veio %v", r.Err)
 		}
+	}
+}
+
+// O pool nunca passa de Parallel envios ao mesmo tempo. O servidor de teste
+// conta quantas requisições estão abertas juntas e guarda o máximo.
+func TestSendAllRespeitaParallel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := progress.NewHub()
+	go hub.Run(ctx)
+	inner := server.New(server.Config{Dir: t.TempDir(), Token: "tk", Hub: hub}).Handler()
+
+	var cur, peak atomic.Int64
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := cur.Add(1)
+		defer cur.Add(-1)
+		for { // guarda o maior valor já visto, sem mutex (CompareAndSwap)
+			m := peak.Load()
+			if n <= m || peak.CompareAndSwap(m, n) {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond) // garante que os envios se sobreponham
+		inner.ServeHTTP(w, r)
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	var files []string
+	for i := 0; i < 9; i++ {
+		p := filepath.Join(dir, fmt.Sprintf("f%d.txt", i))
+		os.WriteFile(p, []byte("conteudo"), 0o644)
+		files = append(files, p)
+	}
+	base, _ := ParseURL(ts.URL + "/?t=tk")
+	s := &Sender{BaseURL: base, Parallel: 3}
+	for _, r := range s.SendAll(ctx, files) {
+		if r.Err != nil {
+			t.Fatalf("%s: %v", r.File, r.Err)
+		}
+	}
+	if got := peak.Load(); got != 3 {
+		t.Errorf("máximo de %d envios simultâneos, queria exatamente 3", got)
+	}
+}
+
+func TestSendAllCancelado(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "a.txt")
+	os.WriteFile(p, []byte("x"), 0o644)
+	base, _ := ParseURL("127.0.0.1:1/?t=tk") // ninguém escutando: nem deve tentar
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // usuário apertou Ctrl+C antes de começar
+	prog := make(chan Progress, 10)
+	s := &Sender{BaseURL: base, Parallel: 2, Progress: prog}
+	for _, r := range s.SendAll(ctx, []string{p, p, p}) {
+		if !errors.Is(r.Err, context.Canceled) {
+			t.Errorf("esperava context.Canceled, veio %v", r.Err)
+		}
+	}
+	// Cada arquivo, mesmo cancelado, avisa que terminou: é o que fecha a
+	// contagem "3/3 prontos" no terminal.
+	close(prog)
+	done := 0
+	for p := range prog {
+		if p.Done {
+			done++
+		}
+	}
+	if done != 3 {
+		t.Errorf("esperava 3 eventos finais, vieram %d", done)
 	}
 }
 

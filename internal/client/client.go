@@ -20,11 +20,14 @@ import (
 	"sync"
 )
 
-// Progress é o andamento de um arquivo no lado de quem envia.
+// Progress é o andamento de um arquivo no lado de quem envia. O último
+// evento de cada arquivo vem com Done (e Err, se deu errado).
 type Progress struct {
 	File  string
 	Sent  int64
 	Total int64
+	Done  bool
+	Err   error
 }
 
 // Result é o resultado final de um arquivo.
@@ -83,12 +86,11 @@ func (s *Sender) SendAll(ctx context.Context, files []string) []Result {
 		}()
 	}
 
+	// Mesmo depois de um Ctrl+C todos os arquivos passam pelos trabalhadores:
+	// sendFile devolve na hora com ctx.Err(), e assim cada arquivo tem o seu
+	// resultado e o seu evento final de progresso (a contagem "N/M" fecha).
 	for i := range files {
-		select {
-		case jobs <- i:
-		case <-ctx.Done():
-			results[i] = Result{File: files[i], Err: ctx.Err()}
-		}
+		jobs <- i
 	}
 	close(jobs) // avisa os trabalhadores que não vem mais nada
 	wg.Wait()
@@ -97,6 +99,18 @@ func (s *Sender) SendAll(ctx context.Context, files []string) []Result {
 
 func (s *Sender) sendFile(ctx context.Context, path string) (res Result) {
 	res.File = path
+	// Registrado primeiro, roda por último: só avisa "terminou" depois que
+	// todos os outros defers (inclusive a espera pela goroutine do corpo)
+	// rodaram. res é o retorno nomeado, então aqui já tem o resultado final.
+	defer func() {
+		if s.Progress != nil {
+			s.Progress <- Progress{File: path, Done: true, Err: res.Err}
+		}
+	}()
+	if err := ctx.Err(); err != nil { // cancelado (Ctrl+C) antes de começar
+		res.Err = err
+		return res
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		res.Err = err
