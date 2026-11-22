@@ -50,6 +50,7 @@ go run ./cmd/qrdrop      # roda
 go test ./...            # testes (inclui um de ponta a ponta que compila o qrdrop)
 go test -short ./...     # o mesmo, sem o teste de ponta a ponta
 go vet ./...             # análise estática
+go run golang.org/x/vuln/cmd/govulncheck@latest ./...   # vulnerabilidades conhecidas nas dependências
 go test -race ./...      # testes com o detector de condições de corrida
 go test -run=^$ -fuzz=FuzzSafeName ./internal/storage   # fuzzing dos nomes de arquivo
 go test -run=^$ -bench=. ./internal/server              # vazão do upload em MB/s

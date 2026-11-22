@@ -47,6 +47,10 @@ Para cada item: explicação curta + trecho do nosso código.
 
 Ferramentas que vêm com a linguagem, também com exemplos no repositório: testes de tabela, fuzzing nativo (`FuzzSafeName`) e exemplos testáveis (`ExampleSafeName`) em [storage_test.go](../internal/storage/storage_test.go); benchmark em MB/s (`BenchmarkUpload`) em [server_test.go](../internal/server/server_test.go); detector de corrida (`go test -race`), que achou um bug real no `qrdrop send` (ver histórico de commits); e um teste de ponta a ponta em [main_test.go](../cmd/qrdrop/main_test.go) que compila o programa com `os/exec`, sobe o receptor, envia arquivos com `qrdrop send` e manda Ctrl+C.
 
+Compilação condicional: [console_windows.go](../cmd/qrdrop/console_windows.go) começa com `//go:build windows` e só entra no binário do Windows (segura a janela aberta com dois cliques e liga as cores ANSI); nos outros sistemas entra [console_other.go](../cmd/qrdrop/console_other.go), com as mesmas funções. É assim que o mesmo código compila para os três sistemas.
+
+Testando os testes: plantamos 32 defeitos no código, um por vez (inverter uma condição, apagar uma linha), e rodamos os testes. Na primeira rodada 9 passaram despercebidos; cada um ganhou um teste, e hoje os 32 são pegos. Os testes com "olhar de atacante" (hash em maiúsculas, formulário fora de ordem, conexão derrubada no meio, vazamento de goroutines) estão em [robustez_test.go](../internal/server/robustez_test.go).
+
 ### Ganchos com o conteúdo da disciplina
 - **Abstração (aula 07):** interfaces, encapsulamento por pacote
 - **Controle de sequência (aula 08):** `select`, `defer`, ausência de exceções

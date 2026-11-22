@@ -38,12 +38,14 @@ Para mandar de um PC para outro sem navegador. Um pool de N goroutines (`-p`, pa
 |---|---|---|
 | GET | `/?t=TOKEN` | Página de upload (servida de `embed.FS`) |
 | GET | `/info?t=TOKEN` | JSON com limite de tamanho, validade do link, arquivos para baixar e estatísticas |
-| POST | `/upload?t=TOKEN` | Recebe um arquivo (multipart). Cabeçalhos opcionais: `X-Upload-ID`, `X-File-Size` (acima do `-max-size` recusa na hora com 413), `X-SHA256` (se não bater, responde 422 e apaga o arquivo) |
+| POST | `/upload?t=TOKEN` | Recebe **um** arquivo por requisição (multipart): a primeira parte do formulário que traz arquivo; campos de texto antes dela são ignorados. Cabeçalhos opcionais: `X-Upload-ID`, `X-File-Size` (acima do `-max-size` recusa na hora com 413), `X-SHA256` (64 caracteres hexadecimais, maiúsculos ou minúsculos; malformado recusa na hora com 400; se não bater, responde 422 e apaga o arquivo) |
 | GET | `/events?t=TOKEN` | Stream SSE de progresso, com um "ping" a cada 20 s |
 | GET | `/download/{nome}?t=TOKEN` | Baixa um arquivo compartilhado com `-share`. Aceita `Range` (download retomável) |
 | GET | `/healthz` | Verificação simples |
 
-Requisições sem token válido recebem `401`.
+Requisições sem token válido recebem `401`. Toda resposta leva `X-Content-Type-Options: nosniff` (um `.html` compartilhado é baixado, nunca executado) e `Referrer-Policy: no-referrer` (o token da URL nunca vai para outro site).
+
+Nomes de arquivo vindos da rede passam por `storage.SafeName`: sem pastas (`../`), sem caracteres proibidos no Windows, sem caracteres de controle (inclusive os C1, que alguns terminais executam) e sem marcas de direção do texto (com U+202E, `fatura\u202Egpj.exe` apareceria como `faturaexe.jpg`).
 
 ## Modelo de concorrência
 
@@ -59,7 +61,7 @@ Requisições sem token válido recebem `401`.
 - **Semáforo com channel:** um channel com buffer de N posições (`-max-uploads`, padrão 8) limita quantos arquivos gravam ao mesmo tempo. Quem chega com tudo ocupado espera no `select`, ou desiste se o cliente desconectar.
 - **Estatísticas com `sync/atomic`:** contadores somados por várias goroutines sem mutex. Contraste útil para a análise: o hub usa channels, as estatísticas usam memória compartilhada atômica, cada um onde faz mais sentido.
 - **Inscrito lento não trava ninguém:** evento de progresso com a fila do inscrito cheia é descartado (o próximo traz o número atualizado); o evento final espera até 50 ms. Ao parar, o hub ainda entrega o que estava na fila antes de fechar os inscritos.
-- **Desligamento:** `RegisterOnShutdown` fecha os streams SSE, que nunca terminariam sozinhos; o hub só para depois do `Shutdown`, para o terminal ainda mostrar os envios que terminaram nesses segundos.
+- **Desligamento:** `RegisterOnShutdown` fecha os streams SSE, que nunca terminariam sozinhos. Envios que não terminam em 5 s têm a conexão derrubada (`http.Server.Close`), e `Server.Wait` (um `sync.WaitGroup`) espera cada um apagar o arquivo pela metade antes de o programa sair. O hub só para depois disso, para o terminal ainda mostrar esses envios.
 
 ## Decisões e alternativas
 
@@ -68,6 +70,8 @@ Requisições sem token válido recebem `401`.
 | SSE para progresso | WebSocket | SSE é unidirecional, sai da stdlib e basta para o caso |
 | Um arquivo por requisição | Todos numa requisição | Paralelismo real e progresso individual |
 | Token na URL | Login/senha | O QR já é o canal de autenticação |
+| QR com cores fixas (ANSI) | Só os caracteres de bloco | Em terminal de fundo claro o QR saía invertido e um leitor comum não lia |
+| Porta livre qualquer se a 8080 estiver ocupada | Erro | O QR leva a porta certa; com `-port` explícito, o erro continua |
 | Sem framework (Gin, Echo) | Gin | A stdlib basta e evidencia a linguagem |
 | Semáforo com channel | `golang.org/x/sync/semaphore` | Mostra channel como ferramenta de sincronização, sem dependência |
 | `sync/atomic` nas estatísticas | Mutex | Só somas e leituras: atômico é mais simples e mais rápido |
