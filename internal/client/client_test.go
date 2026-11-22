@@ -22,7 +22,7 @@ func TestSendAllEmParalelo(t *testing.T) {
 	defer cancel()
 	hub := progress.NewHub()
 	go hub.Run(ctx)
-	ts := httptest.NewServer((&server.Server{Dir: recvDir, Token: "tk", Hub: hub}).Handler())
+	ts := httptest.NewServer(server.New(server.Config{Dir: recvDir, Token: "tk", Hub: hub}).Handler())
 	defer ts.Close()
 
 	var files []string
@@ -70,7 +70,7 @@ func TestSendAllTokenErrado(t *testing.T) {
 	defer cancel()
 	hub := progress.NewHub()
 	go hub.Run(ctx)
-	ts := httptest.NewServer((&server.Server{Dir: t.TempDir(), Token: "certo", Hub: hub}).Handler())
+	ts := httptest.NewServer(server.New(server.Config{Dir: t.TempDir(), Token: "certo", Hub: hub}).Handler())
 	defer ts.Close()
 
 	p := filepath.Join(t.TempDir(), "grande.bin")

@@ -13,7 +13,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -74,9 +73,12 @@ func runReceive(args []string) error {
 
 	hub := progress.NewHub()
 	go hub.Run(ctx)
+	// O terminal do computador é mais um ouvinte do hub, como a página web.
+	go (&progress.Reporter{Out: os.Stdout}).Run(hub.Subscribe())
 
-	srv := &server.Server{Dir: *dir, Token: token, Hub: hub, Log: log.New(os.Stdout, "", log.Ltime)}
+	srv := server.New(server.Config{Dir: *dir, Token: token, Hub: hub})
 	httpSrv := &http.Server{Handler: srv.Handler()}
+	httpSrv.RegisterOnShutdown(srv.CloseEvents) // derruba os SSE, senão o Shutdown espera por eles
 
 	url := fmt.Sprintf("http://%s:%d/?t=%s", ip, *port, token)
 	fmt.Println("Escaneie com o celular ou abra no navegador de outro computador:")
