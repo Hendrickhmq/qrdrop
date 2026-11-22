@@ -45,7 +45,7 @@ func SafeName(name string) string {
 		name = ""
 	}
 	name = strings.Map(func(r rune) rune {
-		if r < 32 || r == 0x7f || strings.ContainsRune(`<>:"/\|?*`, r) {
+		if unsafeRune(r) || strings.ContainsRune(`<>:"/\|?*`, r) {
 			return '_'
 		}
 		return r
@@ -59,6 +59,16 @@ func SafeName(name string) string {
 		name = "_" + name
 	}
 	return name
+}
+
+// unsafeRune diz se r não pode aparecer num nome salvo:
+//   - caracteres de controle: os C0 (\n, \t...), o DEL e também os C1
+//     (U+0080 a U+009F), que alguns terminais executam como comandos ao
+//     imprimir o nome;
+//   - marcas de direção do texto (Bidi_Control): com U+202E,
+//     "fatura\u202Egpj.exe" aparece na tela como "faturaexe.jpg".
+func unsafeRune(r rune) bool {
+	return unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r)
 }
 
 // trimDotsAndSpaces tira pontos e espaços das pontas: no começo, um ponto

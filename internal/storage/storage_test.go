@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -32,6 +33,9 @@ func TestSafeName(t *testing.T) {
 		{"com10.txt", "com10.txt"},     // só de 0 a 9
 		{"console.txt", "console.txt"}, // só o nome exato é reservado
 		{"linha\nnova.txt", "linha_nova.txt"},
+		{"fatura\u202Egpj.exe", "fatura_gpj.exe"},     // apareceria como "faturaexe.jpg"
+		{"\u009b31mvermelho.txt", "_31mvermelho.txt"}, // C1: comando de terminal
+		{"a\u200Fb.txt", "a_b.txt"},                   // marca de direção invisível
 		{"\xff\xfeimg.png", "\uFFFD\uFFFDimg.png"},
 	}
 	for _, c := range cases {
@@ -50,13 +54,20 @@ func TestSafeNameCortaNomesLongos(t *testing.T) {
 	if !strings.HasSuffix(got, ".jpeg") || !utf8.ValidString(got) {
 		t.Errorf("perdeu a extensão ou cortou um caractere ao meio: %q", got)
 	}
+
+	// Depois do último ponto vêm 30 bytes: isso não é extensão, é parte do
+	// nome, e o corte simplesmente fica com os primeiros 200 bytes.
+	estranho := strings.Repeat("a", 250) + "." + strings.Repeat("b", 30)
+	if got := SafeName(estranho); got != strings.Repeat("a", MaxNameBytes) {
+		t.Errorf("nome com \"extensão\" de 30 bytes virou %q", got)
+	}
 }
 
 // FuzzSafeName usa o fuzzing nativo do Go: o `go test` roda só as sementes;
 // `go test -fuzz=FuzzSafeName ./internal/storage` gera milhões de nomes
 // aleatórios procurando um que quebre alguma das propriedades abaixo.
 func FuzzSafeName(f *testing.F) {
-	for _, seed := range []string{"foto.jpg", "../../x", `a\b\..\c`, "con", " . ", "\x00", strings.Repeat("é", 200)} {
+	for _, seed := range []string{"foto.jpg", "../../x", `a\b\..\c`, "con", " . ", "\x00", strings.Repeat("é", 200), "a\u0085b", "x\u202ey"} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, in string) {
@@ -80,9 +91,12 @@ func FuzzSafeName(f *testing.F) {
 			t.Fatalf("não é idempotente: %q -> %q", got, SafeName(got))
 		}
 		for _, r := range got {
-			if r < 32 || r == 0x7f {
-				t.Fatalf("caractere de controle em %q", got)
+			if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) {
+				t.Fatalf("caractere de controle ou de direção em %q", got)
 			}
+		}
+		if r, _ := utf8.DecodeRuneInString(got); unicode.IsSpace(r) {
+			t.Fatalf("espaço no começo: %q", got)
 		}
 	})
 }
